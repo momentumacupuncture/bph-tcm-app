@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 
 // ─── CONFIGURATION ─────────────────────────────────────────────────────────
-// Replace with your Google Apps Script Web App URL (see deployment guide Step 1.3)
-const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbz1ghCcCpdrRkm39XCPbXBaAzjsVLjXXXUoGd2sKG1bmQcx6eTaANI40Z8F3cANt6hm/exec";
-const PRAC_CODE = "tcm2024"; // Change this to your preferred code
+const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbw8AdzDW5uRozcUtwEO0wYcXZER-65rOy8ChBITFIuKYJ1qc-dzupZwRdQU0V8w7gwm/exec";
+const PRAC_CODE = "tcm2024";
 
 // ─── PATTERN DATABASE ───────────────────────────────────────────────────────
 const PATTERNS = [
@@ -96,7 +95,16 @@ const INTAKE_FIELDS = [
   { key:"additionalNotes", label:"Anything else your practitioner should know?", type:"textarea", placeholder:"Additional symptoms, concerns, or context…" },
 ];
 
-// ─── TOKENS ────────────────────────────────────────────────────────────────
+// ─── SCORING FUNCTION ───────────────────────────────────────────────────────
+function calculateScores(symptomSet) {
+  return PATTERNS.map(p => {
+    const matched = p.symptoms.filter(s => symptomSet.has(s));
+    const pct = Math.round((matched.length / p.symptoms.length) * 100);
+    return { ...p, matched, missed: p.symptoms.filter(s => !symptomSet.has(s)), score: matched.length, pct };
+  }).sort((a, b) => b.pct - a.pct);
+}
+
+// ─── DESIGN TOKENS ──────────────────────────────────────────────────────────
 const P = { bg:"#f7f4ef", card:"#fff", border:"#e2d9c8", accent:"#5a7a4a", accentL:"#eaf2e2", text:"#28201a", muted:"#7a6a52" };
 const D = { bg:"#0c1118", card:"#141b26", border:"#242f42", text:"#d4e4f2", muted:"#6a8aaa" };
 
@@ -138,7 +146,7 @@ function PatientIntake({ onComplete }) {
             ) : (
               <input type={f.type} value={values[f.key]||""} onChange={e=>set(f.key,e.target.value)} placeholder={f.placeholder||""} style={{...inp({border:`1.5px solid ${errors[f.key]?"#b04030":P.border}`})}} />
             )}
-            {errors[f.key] && <div style={{fontSize:12,color:"#b04030",marginTop:4}}>⚠ {errors[f.key]}</div>}
+            {errors[f.key] && <div style={{fontSize:12,color:"#b04030",marginTop:4}}>Required</div>}
           </div>
         ))}
       </div>
@@ -160,16 +168,14 @@ function PatientSymptoms({ onComplete }) {
     <div>
       <div style={{textAlign:"center",marginBottom:22}}>
         <h2 style={{margin:"0 0 8px",fontSize:22,fontWeight:600,color:P.text,fontFamily:"Georgia,serif"}}>How are you feeling?</h2>
-        <p style={{margin:0,fontSize:14,color:P.muted,lineHeight:1.6}}>Tap a category to expand it. Select <strong>all</strong> symptoms that currently apply to you.</p>
+        <p style={{margin:0,fontSize:14,color:P.muted,lineHeight:1.6}}>Tap a category to expand it. Select <strong>all</strong> symptoms that apply to you right now.</p>
       </div>
-
       {selected.size > 0 && (
         <div style={{background:P.accentL,border:"1px solid #b0c898",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:13,color:"#3a5a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <span>✓ <strong>{selected.size}</strong> symptom{selected.size!==1?"s":""} selected</span>
           <button onClick={()=>setSelected(new Set())} style={{background:"none",border:"none",fontSize:12,color:P.muted,cursor:"pointer",textDecoration:"underline"}}>Clear all</button>
         </div>
       )}
-
       <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:22}}>
         {SYMPTOM_CATEGORIES.map((cat,ci) => {
           const isOpen = openCats.has(ci);
@@ -199,9 +205,8 @@ function PatientSymptoms({ onComplete }) {
           );
         })}
       </div>
-
       <button onClick={()=>onComplete(selected)} disabled={selected.size===0} style={{width:"100%",padding:"14px",borderRadius:10,background:selected.size===0?"#c8bfb0":`linear-gradient(135deg,${P.accent},#3a6030)`,color:"white",border:"none",fontSize:15,fontWeight:600,cursor:selected.size===0?"not-allowed":"pointer",fontFamily:"inherit",letterSpacing:"0.04em"}}>
-        {selected.size===0?"Please select at least one symptom":`Submit My Symptoms →`}
+        {selected.size===0?"Please select at least one symptom":"Submit My Symptoms →"}
       </button>
     </div>
   );
@@ -224,7 +229,7 @@ function PatientThankYou({ submitting, submitError }) {
       </h2>
       <p style={{fontSize:15,color:P.muted,lineHeight:1.8,maxWidth:340,marginInline:"auto",marginBottom:22}}>
         {submitError
-          ? "Your information was recorded, but could not be sent to the server right now. Please let your practitioner know when you arrive."
+          ? "Your information was recorded, but could not be sent right now. Please let your practitioner know when you arrive."
           : "Your intake form has been received. Your practitioner will review your responses before your appointment."
         }
       </p>
@@ -255,136 +260,229 @@ function tier(pct) {
   return {label:"Low Match",color:"#6a8aaa"};
 }
 
-// ─── PRACTITIONER DASHBOARD ─────────────────────────────────────────────────
-function PractitionerDashboard({ intake, symptoms, onBack }) {
+// ─── PRACTITIONER: PATIENT LIST ─────────────────────────────────────────────
+function PatientList({ records, onSelect, loading, error }) {
+  if (loading) return (
+    <div style={{textAlign:"center",padding:"60px 20px",color:D.muted}}>
+      <div style={{fontSize:32,marginBottom:12}}>⏳</div>
+      <div>Loading patient records…</div>
+    </div>
+  );
+  if (error) return (
+    <div style={{textAlign:"center",padding:"60px 20px",color:"#e05858"}}>
+      <div style={{fontSize:32,marginBottom:12}}>⚠️</div>
+      <div style={{marginBottom:8}}>Could not load records.</div>
+      <div style={{fontSize:12,color:D.muted}}>Check that your Apps Script URL is correct and redeployed.</div>
+    </div>
+  );
+  if (!records.length) return (
+    <div style={{textAlign:"center",padding:"60px 20px",color:D.muted}}>
+      <div style={{fontSize:32,marginBottom:12}}>📋</div>
+      <div>No patient records yet.</div>
+      <div style={{fontSize:12,marginTop:8}}>Records will appear here after patients complete the intake form.</div>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:14}}>
+        Patient Records — {records.length} submission{records.length!==1?"s":""}
+      </div>
+      {records.map((r, i) => (
+        <div key={i} onClick={()=>onSelect(r)}
+          style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:10,padding:"14px 18px",marginBottom:10,cursor:"pointer",transition:"border-color 0.15s"}}
+          onMouseEnter={e=>e.currentTarget.style.borderColor="#4a9eda"}
+          onMouseLeave={e=>e.currentTarget.style.borderColor=D.border}
+        >
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:"bold",color:D.text,marginBottom:3}}>{r["Name"]||"Unknown"}</div>
+              <div style={{fontSize:12,color:D.muted}}>DOB: {r["DOB"]||"—"} · {r["Severity"]||"—"}</div>
+              <div style={{fontSize:12,color:D.muted,marginTop:2}}>Submitted: {r["Timestamp"]||"—"}</div>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0,marginLeft:12}}>
+              {r["Top Pattern"] && (
+                <>
+                  <div style={{fontSize:12,color:"#4adc90",fontWeight:"bold"}}>{r["Top Pattern"]}</div>
+                  <div style={{fontSize:11,color:D.muted}}>{r["Top Score"]}% match</div>
+                </>
+              )}
+              <div style={{fontSize:11,color:"#4a9eda",marginTop:4}}>View →</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── PRACTITIONER: DASHBOARD ─────────────────────────────────────────────────
+function PractitionerDashboard({ onBack }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [selected, setSelected] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
-  const scores = PATTERNS.map(p => {
-    const matched = p.symptoms.filter(s=>symptoms.has(s));
-    const pct = Math.round((matched.length/p.symptoms.length)*100);
-    return {...p, matched, missed:p.symptoms.filter(s=>!symptoms.has(s)), score:matched.length, pct};
-  }).sort((a,b)=>b.pct-a.pct);
+  useEffect(() => {
+    const fetchRecords = async () => {
+      try {
+        const res = await fetch(GOOGLE_SHEET_URL);
+        const data = await res.json();
+        if (data.result === "success") setRecords(data.records);
+        else setError(true);
+      } catch { setError(true); }
+      finally { setLoading(false); }
+    };
+    fetchRecords();
+  }, []);
+
+  // Build scores from saved record
+  const getScores = (record) => {
+    if (!record) return [];
+    const symptomList = record["Symptoms"] ? record["Symptoms"].split(", ") : [];
+    const symptomSet = new Set(symptomList);
+    return calculateScores(symptomSet);
+  };
+
+  const scores = selected ? getScores(selected) : [];
+  const symptomSet = selected ? new Set(selected["Symptoms"]?.split(", ") || []) : new Set();
 
   return (
     <div style={{background:D.bg,minHeight:"100vh",color:D.text,fontFamily:"Georgia,serif"}}>
+      {/* Header */}
       <div style={{background:D.card,borderBottom:`1px solid ${D.border}`,padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
-          <div style={{fontSize:10,letterSpacing:"0.3em",color:D.muted,textTransform:"uppercase",marginBottom:3}}>Practitioner Dashboard · BPH Pattern Analysis</div>
-          <div style={{fontSize:17,fontWeight:"bold"}}>
-            {intake?.name||"Patient"}
-            <span style={{fontSize:12,fontWeight:"normal",color:D.muted,marginLeft:10}}>DOB: {intake?.dob||"—"} · {intake?.severity||"—"}</span>
+          <div style={{fontSize:10,letterSpacing:"0.3em",color:D.muted,textTransform:"uppercase",marginBottom:3}}>
+            Practitioner Dashboard · BPH Pattern Analysis
+          </div>
+          <div style={{fontSize:17,fontWeight:"bold",color:D.text}}>
+            {selected ? selected["Name"] : "All Patients"}
           </div>
         </div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {selected && (
+            <button onClick={()=>{setSelected(null);setExpanded(null);}} style={{background:"none",border:`1px solid ${D.border}`,borderRadius:6,padding:"5px 12px",fontSize:11,color:D.muted,cursor:"pointer",fontFamily:"inherit"}}>
+              ← All Patients
+            </button>
+          )}
+          <button onClick={onBack} style={{background:"none",border:`1px solid ${D.border}`,borderRadius:6,padding:"5px 12px",fontSize:11,color:D.muted,cursor:"pointer",fontFamily:"inherit"}}>
+            ← Patient View
+          </button>
           <div style={{background:"#0a1e34",border:"1px solid #1a3a58",borderRadius:6,padding:"5px 10px",fontSize:10,color:"#4a9eda",letterSpacing:"0.12em"}}>CLINICAL VIEW</div>
-          <button onClick={onBack} style={{background:"none",border:`1px solid ${D.border}`,borderRadius:6,padding:"5px 12px",fontSize:11,color:D.muted,cursor:"pointer",fontFamily:"inherit"}}>← Patient View</button>
         </div>
       </div>
 
       <div style={{maxWidth:900,margin:"0 auto",padding:"20px 16px"}}>
-
-        {/* Intake Summary */}
-        <div style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:10,padding:"16px 20px",marginBottom:14}}>
-          <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:12}}>Patient Intake Summary</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
-            {[["Duration",intake?.duration],["Onset",intake?.onset],["Severity",intake?.severity],["Nocturia",intake?.nightUrination],["Stress",intake?.stressLevel],["Diet",intake?.diet],["Exercise",intake?.exercise],["Prior Treatment",intake?.previousTreatment],["BPH Diagnosis",intake?.diagnosis],["Occupation",intake?.occupation],["Other Conditions",intake?.otherConditions||"None"],["Medications",intake?.medications||"None"]].map(([label,val])=>(
-              <div key={label}>
-                <div style={{fontSize:10,color:D.muted,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:2}}>{label}</div>
-                <div style={{fontSize:13,color:D.text}}>{val||"—"}</div>
+        {!selected ? (
+          <PatientList records={records} onSelect={setSelected} loading={loading} error={error}/>
+        ) : (
+          <div>
+            {/* Intake Summary */}
+            <div style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:10,padding:"16px 20px",marginBottom:14}}>
+              <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:12}}>Patient Intake Summary</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
+                {[["Submitted",selected["Timestamp"]],["Duration",selected["Duration"]],["Onset",selected["Onset"]],["Severity",selected["Severity"]],["Nocturia",selected["Nocturia"]],["Stress",selected["Stress"]],["Diet",selected["Diet"]],["Exercise",selected["Exercise"]],["Prior Treatment",selected["Previous Treatment"]],["BPH Diagnosis",selected["Diagnosis"]],["Occupation",selected["Occupation"]],["Other Conditions",selected["Other Conditions"]||"None"],["Medications",selected["Medications"]||"None"]].map(([label,val])=>(
+                  <div key={label}>
+                    <div style={{fontSize:10,color:D.muted,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:2}}>{label}</div>
+                    <div style={{fontSize:13,color:D.text}}>{val||"—"}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          {intake?.additionalNotes && (
-            <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${D.border}`}}>
-              <div style={{fontSize:10,color:D.muted,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:4}}>Patient Notes</div>
-              <div style={{fontSize:13,color:D.text,fontStyle:"italic"}}>{intake.additionalNotes}</div>
-            </div>
-          )}
-        </div>
-
-        {/* Symptoms */}
-        <div style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:10,padding:"16px 20px",marginBottom:14}}>
-          <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:10}}>Reported Symptoms ({symptoms.size})</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-            {[...symptoms].map(s=>(
-              <span key={s} style={{background:"#101e2e",border:"1px solid #1e3a52",borderRadius:12,padding:"4px 10px",fontSize:12,color:"#78b0d0"}}>{s}</span>
-            ))}
-          </div>
-        </div>
-
-        {/* Pattern scores */}
-        <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:12}}>Pattern Discrimination — Tiered Match Analysis</div>
-
-        {scores.map((p,idx) => {
-          const t = tier(p.pct);
-          const isPrimary = idx===0&&p.score>0;
-          const isSecondary = idx===1&&p.score>0;
-          const isExp = expanded===p.id;
-          return (
-            <div key={p.id} style={{background:isPrimary?"#0a1b2e":isSecondary?"#0e1820":D.card,border:`1px solid ${isPrimary?p.accent:isSecondary?"#1e3040":D.border}`,borderRadius:10,marginBottom:10,overflow:"hidden",boxShadow:isPrimary?`0 0 24px ${p.accent}1a`:"none"}}>
-              <div onClick={()=>p.score>0&&setExpanded(isExp?null:p.id)} style={{padding:"14px 18px",cursor:p.score>0?"pointer":"default"}}>
-                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:4}}>
-                  <div style={{width:30,height:30,borderRadius:"50%",background:isPrimary?p.accent:"#1e2d42",color:isPrimary?"#000810":D.muted,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:"bold",flexShrink:0}}>{idx+1}</div>
-                  <div style={{flex:1}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                      <span style={{fontSize:isPrimary?15:14,fontWeight:isPrimary?"bold":"normal",color:isPrimary?"white":D.text}}>{p.name}</span>
-                      <span style={{fontSize:12,color:D.muted,fontStyle:"italic"}}>{p.chineseName}</span>
-                      {isPrimary&&<span style={{fontSize:9,background:p.accent,color:"#000810",borderRadius:4,padding:"2px 7px",fontWeight:"bold",letterSpacing:"0.15em"}}>PRIMARY</span>}
-                      {isSecondary&&p.score>0&&<span style={{fontSize:9,background:"#1e3040",color:"#6a9aba",borderRadius:4,padding:"2px 7px",letterSpacing:"0.1em"}}>SECONDARY</span>}
-                    </div>
-                    <div style={{fontSize:11,color:D.muted,marginTop:2}}>{p.nature}</div>
-                  </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:isPrimary?26:20,fontWeight:"bold",color:p.score>0?p.accent:"#2a3a4a"}}>{p.pct}%</div>
-                    <div style={{fontSize:11,color:t.color,marginTop:1}}>{t.label}</div>
-                    <div style={{fontSize:10,color:D.muted}}>{p.score}/{p.symptoms.length} signs</div>
-                  </div>
-                </div>
-                <ScoreBar pct={p.pct} color={p.accent}/>
-                {p.score>0&&<div style={{fontSize:10,color:D.muted,marginTop:5,textAlign:"right"}}>{isExp?"▲ Collapse":"▼ Full analysis"}</div>}
-              </div>
-
-              {isExp&&(
-                <div style={{borderTop:`1px solid ${D.border}`,padding:"16px 18px"}}>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
-                    <div>
-                      <div style={{fontSize:10,letterSpacing:"0.15em",color:"#4adc90",textTransform:"uppercase",marginBottom:8}}>✓ Matched Signs ({p.matched.length})</div>
-                      {p.matched.map(s=><div key={s} style={{fontSize:12,color:"#90d8a8",marginBottom:4,paddingLeft:8,borderLeft:"2px solid #4adc90"}}>{s}</div>)}
-                    </div>
-                    <div>
-                      <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:8}}>○ Absent Signs ({p.missed.length})</div>
-                      {p.missed.map(s=><div key={s} style={{fontSize:12,color:"#3a5a6a",marginBottom:4,paddingLeft:8,borderLeft:"2px solid #1e3a4a"}}>{s}</div>)}
-                    </div>
-                  </div>
-                  <div style={{background:"#080f1a",borderRadius:8,padding:"12px 14px",marginBottom:12,borderLeft:`3px solid ${p.accent}`}}>
-                    <div style={{fontSize:10,letterSpacing:"0.15em",color:p.accent,textTransform:"uppercase",marginBottom:4}}>Treatment Principles</div>
-                    <div style={{fontSize:13,color:D.text,fontStyle:"italic"}}>{p.treatment}</div>
-                  </div>
-                  <div style={{marginBottom:12}}>
-                    <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:4}}>Guiding Formula</div>
-                    <div style={{fontSize:14,color:"white"}}>{p.formula}</div>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:8}}>Materia Medica</div>
-                    <div style={{columns:2,columnGap:16}}>
-                      {p.ingredients.map(ing=><div key={ing} style={{fontSize:12,color:"#7aaac8",marginBottom:5,breakInside:"avoid",paddingLeft:8,borderLeft:`1px solid ${p.accent}55`}}>{ing}</div>)}
-                    </div>
-                  </div>
+              {selected["Additional Notes"] && (
+                <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${D.border}`}}>
+                  <div style={{fontSize:10,color:D.muted,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:4}}>Patient Notes</div>
+                  <div style={{fontSize:13,color:D.text,fontStyle:"italic"}}>{selected["Additional Notes"]}</div>
                 </div>
               )}
             </div>
-          );
-        })}
 
-        <div style={{marginTop:16,padding:"12px 16px",background:"#0a1018",border:"1px solid #182030",borderRadius:6,fontSize:11,color:"#3a5a70",lineHeight:1.7}}>
-          <strong style={{color:"#5a7a90"}}>Source:</strong> Principles of Chinese Medical Andrology — Benign Prostatic Hyperplasia, Pattern Discrimination pp. 183–188. Analysis assists clinical decision-making only. Final diagnosis requires full tongue, pulse, and clinical evaluation.
-        </div>
+            {/* Symptoms */}
+            <div style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:10,padding:"16px 20px",marginBottom:14}}>
+              <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:10}}>
+                Reported Symptoms ({symptomSet.size})
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {[...symptomSet].filter(s=>s).map(s=>(
+                  <span key={s} style={{background:"#101e2e",border:"1px solid #1e3a52",borderRadius:12,padding:"4px 10px",fontSize:12,color:"#78b0d0"}}>{s}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* Pattern Scores */}
+            <div style={{fontSize:10,letterSpacing:"0.2em",color:D.muted,textTransform:"uppercase",marginBottom:12}}>
+              Pattern Discrimination — Tiered Match Analysis
+            </div>
+
+            {scores.map((p,idx) => {
+              const t = tier(p.pct);
+              const isPrimary = idx===0&&p.score>0;
+              const isSecondary = idx===1&&p.score>0;
+              const isExp = expanded===p.id;
+              return (
+                <div key={p.id} style={{background:isPrimary?"#0a1b2e":isSecondary?"#0e1820":D.card,border:`1px solid ${isPrimary?p.accent:isSecondary?"#1e3040":D.border}`,borderRadius:10,marginBottom:10,overflow:"hidden",boxShadow:isPrimary?`0 0 24px ${p.accent}1a`:"none"}}>
+                  <div onClick={()=>p.score>0&&setExpanded(isExp?null:p.id)} style={{padding:"14px 18px",cursor:p.score>0?"pointer":"default"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:4}}>
+                      <div style={{width:30,height:30,borderRadius:"50%",background:isPrimary?p.accent:"#1e2d42",color:isPrimary?"#000810":D.muted,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:"bold",flexShrink:0}}>{idx+1}</div>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                          <span style={{fontSize:isPrimary?15:14,fontWeight:isPrimary?"bold":"normal",color:isPrimary?"white":D.text}}>{p.name}</span>
+                          <span style={{fontSize:12,color:D.muted,fontStyle:"italic"}}>{p.chineseName}</span>
+                          {isPrimary&&<span style={{fontSize:9,background:p.accent,color:"#000810",borderRadius:4,padding:"2px 7px",fontWeight:"bold",letterSpacing:"0.15em"}}>PRIMARY</span>}
+                          {isSecondary&&p.score>0&&<span style={{fontSize:9,background:"#1e3040",color:"#6a9aba",borderRadius:4,padding:"2px 7px",letterSpacing:"0.1em"}}>SECONDARY</span>}
+                        </div>
+                        <div style={{fontSize:11,color:D.muted,marginTop:2}}>{p.nature}</div>
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontSize:isPrimary?26:20,fontWeight:"bold",color:p.score>0?p.accent:"#2a3a4a"}}>{p.pct}%</div>
+                        <div style={{fontSize:11,color:t.color,marginTop:1}}>{t.label}</div>
+                        <div style={{fontSize:10,color:D.muted}}>{p.score}/{p.symptoms.length} signs</div>
+                      </div>
+                    </div>
+                    <ScoreBar pct={p.pct} color={p.accent}/>
+                    {p.score>0&&<div style={{fontSize:10,color:D.muted,marginTop:5,textAlign:"right"}}>{isExp?"▲ Collapse":"▼ Full analysis"}</div>}
+                  </div>
+                  {isExp&&(
+                    <div style={{borderTop:`1px solid ${D.border}`,padding:"16px 18px"}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+                        <div>
+                          <div style={{fontSize:10,letterSpacing:"0.15em",color:"#4adc90",textTransform:"uppercase",marginBottom:8}}>✓ Matched Signs ({p.matched.length})</div>
+                          {p.matched.map(s=><div key={s} style={{fontSize:12,color:"#90d8a8",marginBottom:4,paddingLeft:8,borderLeft:"2px solid #4adc90"}}>{s}</div>)}
+                        </div>
+                        <div>
+                          <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:8}}>○ Absent Signs ({p.missed.length})</div>
+                          {p.missed.map(s=><div key={s} style={{fontSize:12,color:"#3a5a6a",marginBottom:4,paddingLeft:8,borderLeft:"2px solid #1e3a4a"}}>{s}</div>)}
+                        </div>
+                      </div>
+                      <div style={{background:"#080f1a",borderRadius:8,padding:"12px 14px",marginBottom:12,borderLeft:`3px solid ${p.accent}`}}>
+                        <div style={{fontSize:10,letterSpacing:"0.15em",color:p.accent,textTransform:"uppercase",marginBottom:4}}>Treatment Principles</div>
+                        <div style={{fontSize:13,color:D.text,fontStyle:"italic"}}>{p.treatment}</div>
+                      </div>
+                      <div style={{marginBottom:12}}>
+                        <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:4}}>Guiding Formula</div>
+                        <div style={{fontSize:14,color:"white"}}>{p.formula}</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:10,letterSpacing:"0.15em",color:D.muted,textTransform:"uppercase",marginBottom:8}}>Materia Medica</div>
+                        <div style={{columns:2,columnGap:16}}>
+                          {p.ingredients.map(ing=><div key={ing} style={{fontSize:12,color:"#7aaac8",marginBottom:5,breakInside:"avoid",paddingLeft:8,borderLeft:`1px solid ${p.accent}55`}}>{ing}</div>)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div style={{marginTop:16,padding:"12px 16px",background:"#0a1018",border:"1px solid #182030",borderRadius:6,fontSize:11,color:"#3a5a70",lineHeight:1.7}}>
+              <strong style={{color:"#5a7a90"}}>Source:</strong> Principles of Chinese Medical Andrology — BPH Pattern Discrimination pp. 183–188. Analysis assists clinical decision-making only.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ─── PROGRESS STEPPER ───────────────────────────────────────────────────────
+// ─── STEPPER ────────────────────────────────────────────────────────────────
 function Stepper({ step }) {
   const steps = ["Intake","Symptoms","Done"];
   return (
@@ -409,7 +507,6 @@ export default function App() {
   const [view, setView] = useState("patient");
   const [step, setStep] = useState(0);
   const [intake, setIntake] = useState(null);
-  const [symptoms, setSymptoms] = useState(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(false);
   const [codeInput, setCodeInput] = useState("");
@@ -420,12 +517,25 @@ export default function App() {
     if (!GOOGLE_SHEET_URL || GOOGLE_SHEET_URL === "YOUR_APPS_SCRIPT_URL_HERE") return;
     setSubmitting(true);
     try {
-      await fetch(GOOGLE_SHEET_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"application/json"}, body:JSON.stringify({...intakeData, symptoms:[...symptomSet].join(", ")}) });
-    } catch { setSubmitError(true); } finally { setSubmitting(false); }
+      const scores = calculateScores(symptomSet);
+      const payload = {
+        ...intakeData,
+        symptoms: [...symptomSet].join(", "),
+        topPattern: scores[0]?.name || "",
+        topScore: scores[0]?.pct || 0,
+        secondPattern: scores[1]?.name || "",
+        secondScore: scores[1]?.pct || 0,
+        thirdPattern: scores[2]?.name || "",
+        thirdScore: scores[2]?.pct || 0,
+        allScores: scores.map(s=>`${s.name}: ${s.pct}%`).join(" | "),
+      };
+      await fetch(GOOGLE_SHEET_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+    } catch { setSubmitError(true); }
+    finally { setSubmitting(false); }
   };
 
   const handleSymptomsDone = async (sel) => {
-    setSymptoms(sel); setStep(2);
+    setStep(2);
     await submitToSheets(intake, sel);
   };
 
@@ -435,22 +545,11 @@ export default function App() {
   };
 
   if (view==="practitioner") {
-    if (step<2) return (
-      <div style={{background:D.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:D.text,fontFamily:"Georgia,serif",padding:24}}>
-        <div style={{textAlign:"center",maxWidth:360}}>
-          <div style={{fontSize:40,marginBottom:14}}>🩺</div>
-          <h2 style={{fontSize:20,marginBottom:10}}>No patient data yet</h2>
-          <p style={{fontSize:14,color:D.muted,lineHeight:1.7,marginBottom:20}}>The patient has not yet completed their intake form.</p>
-          <button onClick={()=>setView("patient")} style={{background:"none",border:`1px solid ${D.border}`,borderRadius:8,padding:"10px 20px",color:D.muted,cursor:"pointer",fontFamily:"inherit",fontSize:14}}>← Return to Patient Form</button>
-        </div>
-      </div>
-    );
-    return <PractitionerDashboard intake={intake} symptoms={symptoms} onBack={()=>setView("patient")}/>;
+    return <PractitionerDashboard onBack={()=>setView("patient")}/>;
   }
 
   return (
     <div style={{background:P.bg,minHeight:"100vh"}}>
-      {/* Header */}
       <div style={{background:"white",borderBottom:`1px solid ${P.border}`,padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
           <div style={{fontSize:15,fontWeight:600,color:P.text,fontFamily:"Georgia,serif"}}>🌿 Patient Health Form</div>
@@ -461,7 +560,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* Code entry */}
       {showCode&&(
         <div style={{background:"#f0ece0",borderBottom:`1px solid ${P.border}`,padding:"12px 20px",display:"flex",gap:10,alignItems:"center",justifyContent:"center",flexWrap:"wrap"}}>
           <input type="password" placeholder="Enter practitioner code" value={codeInput} onChange={e=>{setCodeInput(e.target.value);setCodeError(false);}} onKeyDown={e=>e.key==="Enter"&&handlePracAccess()}
@@ -471,7 +569,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Main */}
       <div style={{maxWidth:580,margin:"0 auto",padding:"28px 16px"}}>
         {step<2&&<Stepper step={step}/>}
         <div style={{background:"white",borderRadius:14,border:`1px solid ${P.border}`,padding:"28px 22px",boxShadow:"0 2px 20px rgba(0,0,0,0.06)"}}>
