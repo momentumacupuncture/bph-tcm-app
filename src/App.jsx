@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 
 // ─── CONFIGURATION ─────────────────────────────────────────────────────────
 // Replace with your Google Apps Script Web App URL (see deployment guide Step 1.3)
-const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbxKJCGOlQvnHOWFMbGdt5MTy7nfqydFlAIjRZ4ssDO_hVlyH6a2VZ71V6cIyEH5QukC/exec";
+const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbz1ghCcCpdrRkm39XCPbXBaAzjsVLjXXXUoGd2sKG1bmQcx6eTaANI40Z8F3cANt6hm/exec";
 const PRAC_CODE = "tcm2024"; // Change this to your preferred code
 
 // ─── PATTERN DATABASE ───────────────────────────────────────────────────────
